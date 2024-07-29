@@ -1,15 +1,15 @@
 function doGet() {
   var html = HtmlService.createHtmlOutputFromFile('Index');
-  return html
+  return html;
 }
 
 /**
- * Function to search for emails from the last 10 days,
+ * Function to search for emails from the last 1 days,
  * and create calendar events for each relevant email.
  */
 function getEvents() {
-  // Search for all emails received in the last 10 days
-  var threads = GmailApp.search('newer_than:3d');
+  // Search for all emails received today
+  var threads = GmailApp.search('newer_than:10d');
   Logger.log(`Number of threads found: ${threads.length}`);
 
   if (threads.length === 0) {
@@ -55,48 +55,57 @@ function getEvents() {
  */
 function extractDetails(body) {
   // Enhanced regex to match meeting date and time in various formats
-  var dateRegex = /\b(\d{1,2}\/\d{1,2}\/\d{4}|\d{1,2}-\d{1,2}-\d{4}|\b(?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4})\b/i;
+  var dateRegex = /\b(\d{1,2}\s(?:January|February|March|April|May|June|July|August|September|October|November|December)\s\d{4})\b/i;
+  var dateRegex2 = /\b(\d{2}-\d{2}-\d{4})\b/i; // New regex to match dates in format DD-MM-YYYY
+  var dateRangeRegex = /\b((?:\d{1,2}\s)?(?:January|February|March|April|May|June|July|August|September|October|November|December)\s\d{1,2}(?:,\s\d{4})?)\s*-\s*((?:\d{1,2}\s)?(?:January|February|March|April|May|June|July|August|September|October|November|December)\s\d{1,2},\s\d{4})\b/i;
   var timeRegex = /(\d{1,2}:\d{2}\s*[APMapm]{2}|\d{1,2}\s*[APMapm]{2})\s*-\s*(\d{1,2}:\d{2}\s*[APMapm]{2}|\d{1,2}\s*[APMapm]{2})/i;
-  var dayOfWeekRegex = /(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i;
-  
+
   var dateMatch = body.match(dateRegex);
+  var dateMatch2 = body.match(dateRegex2);
+  var dateRangeMatch = body.match(dateRangeRegex);
   var timeMatch = body.match(timeRegex);
-  var dayOfWeekMatch = body.match(dayOfWeekRegex);
 
   var startTime, endTime;
 
-  if (dateMatch || dayOfWeekMatch) {
-    var dateStr = dateMatch ? dateMatch[1].replace(/\//g, '-').replace(/-/g, ' ') : '';
-    var today = new Date();
-    var year = today.getFullYear();
-    
-    if (dateStr.includes('-') || dateStr.includes('/')) {
-      // Parsing dates in format DD/MM/YYYY or DD-MM-YYYY
-      var dateParts = dateStr.split(/[\/-]/);
-      var day = parseInt(dateParts[0], 10);
-      var month = parseInt(dateParts[1], 10) - 1; // Months are 0-based in JavaScript Date
-      var year = parseInt(dateParts[2], 10);
-      var dateObj = new Date(year, month, day);
-      dateStr = dateObj.toLocaleDateString("en-US");
-    } else if (dateStr) {
-      // Parsing dates in format "Month DD, YYYY"
-      dateStr = new Date(dateStr).toLocaleDateString("en-US");
-    } else {
-      // If only day of the week is given
-      var dayOfWeek = dayOfWeekMatch[1];
-      var dayIndex = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].indexOf(dayOfWeek);
-      var todayIndex = today.getDay();
-      var daysUntilEvent = (dayIndex >= todayIndex) ? dayIndex - todayIndex : 7 - (todayIndex - dayIndex);
-      var eventDate = new Date();
-      eventDate.setDate(today.getDate() + daysUntilEvent);
-      dateStr = eventDate.toLocaleDateString("en-US");
+  if (dateRangeMatch) {
+    var startDateStr = dateRangeMatch[1];
+    var endDateStr = dateRangeMatch[2];
+
+    // Handle incomplete start dates (e.g., "Aug 2 - 18, 2024")
+    if (!/\d{4}/.test(startDateStr)) {
+      startDateStr += endDateStr.match(/\s\d{4}$/)[0];
     }
 
-    Logger.log('Formatted date string: ' + dateStr);
+    var startDate = new Date(startDateStr);
+    var endDate = new Date(endDateStr);
 
-    // Convert the dateStr from MM/DD/YYYY to YYYY-MM-DD
-    var formattedDateParts = dateStr.split('/');
-    var formattedDateStr = `${formattedDateParts[2]}-${formattedDateParts[0]}-${formattedDateParts[1]}`;
+    var formattedStartDateStr = startDate.toISOString().split('T')[0];
+    var formattedEndDateStr = endDate.toISOString().split('T')[0];
+
+    if (timeMatch) {
+      var startTimeStr = timeMatch[1];
+      var endTimeStr = timeMatch[2];
+      startTime = new Date(`${formattedStartDateStr} ${startTimeStr}`);
+      endTime = new Date(`${formattedEndDateStr} ${endTimeStr}`);
+    } else {
+      // Default time if not specified
+      startTime = new Date(formattedStartDateStr);
+      endTime = new Date(formattedEndDateStr);
+    }
+
+    return { startTime, endTime };
+  } else if (dateMatch || dateMatch2) {
+    var dateStr = dateMatch ? dateMatch[1] : dateMatch2[1];
+    var date;
+
+    if (dateMatch2) {
+      var parts = dateStr.split('-');
+      date = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+    } else {
+      date = new Date(dateStr);
+    }
+
+    var formattedDateStr = date.toISOString().split('T')[0];
 
     if (timeMatch) {
       var startTimeStr = timeMatch[1];
@@ -111,11 +120,10 @@ function extractDetails(body) {
 
     return { startTime, endTime };
   } else {
-    Logger.log('No date found in email body.');
+    console.log('No date found in email body.');
     return null;
   }
 }
-
 
 
 /**
@@ -141,8 +149,9 @@ function deleteAllCalendarEvents() {
   var calendar = CalendarApp.getDefaultCalendar();
   
   // Define a wide date range to cover all possible events
-  var startTime = new Date('2000-01-01');
-  var endTime = new Date('2100-01-01');
+  var currentDate = new Date();
+  var startTime = new Date(currentDate.getFullYear() - 1, currentDate.getMonth(), currentDate.getDate());
+  var endTime = new Date(currentDate.getFullYear() + 1, currentDate.getMonth(), currentDate.getDate());
   
   var events = calendar.getEvents(startTime, endTime);
   Logger.log('Number of events found: ' + events.length);
